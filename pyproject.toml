@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metastrip"
+version = "1.0.0"
+description = "View, strip, and edit file metadata with a modern GUI"
+readme = "README.MD"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "customtkinter>=5.2.0",
+    "mutagen>=1.47.0",
+    "Pillow>=10.0.0",
+    "PyPDF2>=3.0.0",
+]
+
+[project.scripts]
+metastrip = "metastrip.gui:main"
+
+[project.gui-scripts]
+metastrip-gui = "metastrip.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["metastrip*"]
