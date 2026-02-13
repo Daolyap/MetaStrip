@@ -3,7 +3,7 @@
 import os
 import json
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
 import customtkinter as ctk
 
@@ -12,6 +12,11 @@ from metastrip.engine import (
     strip_metadata,
     edit_metadata,
     export_metadata,
+    import_metadata,
+    remove_metadata_fields,
+    rename_file,
+    set_file_timestamps,
+    get_editable_fields,
     detect_file_type,
     ALL_SUPPORTED,
 )
@@ -68,6 +73,35 @@ class MetaStripApp(ctk.CTk):
         theme_menu.pack(side="right", padx=5, pady=6)
         ctk.CTkLabel(toolbar, text="Theme:").pack(side="right", padx=(5, 0), pady=6)
 
+        # Second toolbar for editing tools
+        edit_toolbar = ctk.CTkFrame(self, height=48)
+        edit_toolbar.pack(fill="x", padx=10, pady=(4, 0))
+
+        self._btn_add_field = ctk.CTkButton(
+            edit_toolbar, text="Add Field", command=self._add_field, width=110, state="disabled",
+        )
+        self._btn_add_field.pack(side="left", padx=5, pady=6)
+
+        self._btn_remove_field = ctk.CTkButton(
+            edit_toolbar, text="Remove Field", command=self._remove_field, width=120, state="disabled",
+        )
+        self._btn_remove_field.pack(side="left", padx=5, pady=6)
+
+        self._btn_import = ctk.CTkButton(
+            edit_toolbar, text="Import JSON", command=self._import_json, width=120, state="disabled",
+        )
+        self._btn_import.pack(side="left", padx=5, pady=6)
+
+        self._btn_rename = ctk.CTkButton(
+            edit_toolbar, text="Rename File", command=self._rename_file, width=120, state="disabled",
+        )
+        self._btn_rename.pack(side="left", padx=5, pady=6)
+
+        self._btn_timestamps = ctk.CTkButton(
+            edit_toolbar, text="Set Timestamps", command=self._set_timestamps, width=130, state="disabled",
+        )
+        self._btn_timestamps.pack(side="left", padx=5, pady=6)
+
         # File info bar
         info_frame = ctk.CTkFrame(self)
         info_frame.pack(fill="x", padx=10, pady=6)
@@ -86,6 +120,23 @@ class MetaStripApp(ctk.CTk):
         self._entries: dict[str, ctk.CTkEntry] = {}
 
     # ------------------------------------------------------------------ #
+    #  Helpers                                                             #
+    # ------------------------------------------------------------------ #
+
+    def _enable_file_buttons(self):
+        """Enable all buttons that require a loaded file."""
+        for btn in (self._btn_strip, self._btn_save, self._btn_export,
+                    self._btn_add_field, self._btn_remove_field,
+                    self._btn_import, self._btn_rename, self._btn_timestamps):
+            btn.configure(state="normal")
+
+    def _reload_current_file(self):
+        """Re-read metadata for the current file and refresh the table."""
+        if self._current_file:
+            self._metadata = read_metadata(self._current_file)
+            self._populate_table()
+
+    # ------------------------------------------------------------------ #
     #  Actions                                                            #
     # ------------------------------------------------------------------ #
 
@@ -101,9 +152,7 @@ class MetaStripApp(ctk.CTk):
         self._lbl_type.configure(text=ftype.upper() if ftype != "unknown" else "GENERIC")
         self._metadata = read_metadata(path)
         self._populate_table()
-        self._btn_strip.configure(state="normal")
-        self._btn_save.configure(state="normal")
-        self._btn_export.configure(state="normal")
+        self._enable_file_buttons()
 
     def _populate_table(self):
         # Clear existing rows
@@ -144,8 +193,7 @@ class MetaStripApp(ctk.CTk):
             # Reload the stripped file
             self._current_file = output
             self._lbl_file.configure(text=output)
-            self._metadata = read_metadata(output)
-            self._populate_table()
+            self._reload_current_file()
         else:
             messagebox.showerror("MetaStrip", "Failed to strip metadata.")
 
@@ -171,8 +219,7 @@ class MetaStripApp(ctk.CTk):
             messagebox.showinfo("MetaStrip", f"Metadata saved!\nSaved to: {output}")
             self._current_file = output
             self._lbl_file.configure(text=output)
-            self._metadata = read_metadata(output)
-            self._populate_table()
+            self._reload_current_file()
         else:
             messagebox.showerror("MetaStrip", "Failed to save metadata edits.")
 
@@ -192,6 +239,130 @@ class MetaStripApp(ctk.CTk):
             messagebox.showinfo("MetaStrip", f"Metadata exported to:\n{output}")
         else:
             messagebox.showerror("MetaStrip", "Failed to export metadata.")
+
+    def _add_field(self):
+        """Prompt user for a new field name and add it to the table."""
+        if not self._current_file:
+            return
+        suggestions = get_editable_fields(self._current_file)
+        prompt_extra = ""
+        if suggestions:
+            prompt_extra = "\n\nSuggested fields:\n" + ", ".join(suggestions)
+        field_name = simpledialog.askstring(
+            "Add Metadata Field",
+            f"Enter the metadata field name:{prompt_extra}",
+            parent=self,
+        )
+        if not field_name or not field_name.strip():
+            return
+        field_name = field_name.strip()
+        if field_name in self._entries:
+            messagebox.showwarning("MetaStrip", f"Field '{field_name}' already exists.")
+            return
+        # Add to internal metadata and refresh table
+        self._metadata[field_name] = ""
+        self._populate_table()
+
+    def _remove_field(self):
+        """Prompt user for a field name to remove from the file."""
+        if not self._current_file:
+            return
+        editable_keys = [k for k in self._metadata
+                         if k not in ("File Name", "File Size", "Created", "Modified")]
+        if not editable_keys:
+            messagebox.showinfo("MetaStrip", "No removable metadata fields.")
+            return
+        prompt_text = "Enter the field name to remove:\n\nCurrent fields:\n" + ", ".join(editable_keys)
+        field_name = simpledialog.askstring(
+            "Remove Metadata Field", prompt_text, parent=self,
+        )
+        if not field_name or not field_name.strip():
+            return
+        field_name = field_name.strip()
+        if field_name not in self._metadata:
+            messagebox.showwarning("MetaStrip", f"Field '{field_name}' not found.")
+            return
+        output = filedialog.asksaveasfilename(
+            title="Save file with field removed",
+            initialfile=self._default_output_name("_edited"),
+        )
+        if not output:
+            return
+        ok = remove_metadata_fields(self._current_file, [field_name], output)
+        if ok:
+            messagebox.showinfo("MetaStrip", f"Field '{field_name}' removed.\nSaved to: {output}")
+            self._current_file = output
+            self._lbl_file.configure(text=output)
+            self._reload_current_file()
+        else:
+            messagebox.showerror("MetaStrip", "Failed to remove field.")
+
+    def _import_json(self):
+        """Import metadata from a JSON file and apply to the current file."""
+        if not self._current_file:
+            return
+        json_path = filedialog.askopenfilename(
+            title="Select JSON metadata file",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not json_path:
+            return
+        output = filedialog.asksaveasfilename(
+            title="Save file with imported metadata",
+            initialfile=self._default_output_name("_edited"),
+        )
+        if not output:
+            return
+        ok = import_metadata(json_path, self._current_file, output)
+        if ok:
+            messagebox.showinfo("MetaStrip", f"Metadata imported and saved to:\n{output}")
+            self._current_file = output
+            self._lbl_file.configure(text=output)
+            self._reload_current_file()
+        else:
+            messagebox.showerror("MetaStrip", "Failed to import metadata from JSON.")
+
+    def _rename_file(self):
+        """Rename the currently loaded file."""
+        if not self._current_file:
+            return
+        current_name = os.path.basename(self._current_file)
+        new_name = simpledialog.askstring(
+            "Rename File",
+            f"Current name: {current_name}\n\nEnter new file name:",
+            initialvalue=current_name,
+            parent=self,
+        )
+        if not new_name or not new_name.strip() or new_name.strip() == current_name:
+            return
+        new_path = rename_file(self._current_file, new_name.strip())
+        if new_path:
+            messagebox.showinfo("MetaStrip", f"File renamed to:\n{os.path.basename(new_path)}")
+            self._current_file = new_path
+            self._lbl_file.configure(text=new_path)
+            self._reload_current_file()
+        else:
+            messagebox.showerror("MetaStrip", "Failed to rename file. A file with that name may already exist.")
+
+    def _set_timestamps(self):
+        """Let the user change the file modification and access timestamps."""
+        if not self._current_file:
+            return
+        current_modified = self._metadata.get("Modified", "")
+        new_modified = simpledialog.askstring(
+            "Set Modified Timestamp",
+            "Enter new modification timestamp (ISO format):\ne.g. 2024-01-15 10:30:00",
+            initialvalue=current_modified,
+            parent=self,
+        )
+        if not new_modified or not new_modified.strip():
+            return
+        ok = set_file_timestamps(self._current_file, modified=new_modified.strip())
+        if ok:
+            messagebox.showinfo("MetaStrip", "File timestamps updated.")
+            self._reload_current_file()
+        else:
+            messagebox.showerror("MetaStrip", "Failed to set timestamps. Check the date format.")
 
     @staticmethod
     def _change_theme(choice: str):

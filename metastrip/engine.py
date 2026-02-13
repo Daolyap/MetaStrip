@@ -2,6 +2,7 @@
 
 import os
 import json
+import shutil
 import struct
 import datetime
 
@@ -169,7 +170,6 @@ def _strip_audio_metadata(filepath: str, output_path: str) -> bool:
     if not HAS_MUTAGEN:
         return False
     try:
-        import shutil
         shutil.copy2(filepath, output_path)
         audio = MutagenFile(output_path, easy=True)
         if audio is not None and audio.tags is not None:
@@ -184,7 +184,6 @@ def _edit_audio_metadata(filepath: str, output_path: str, updates: dict) -> bool
     if not HAS_MUTAGEN:
         return False
     try:
-        import shutil
         shutil.copy2(filepath, output_path)
         audio = MutagenFile(output_path, easy=True)
         if audio is None:
@@ -322,6 +321,171 @@ def export_metadata(metadata: dict, output_path: str) -> bool:
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
+        return True
+    except Exception:
+        return False
+
+
+def import_metadata(json_path: str, filepath: str, output_path: str | None = None) -> bool:
+    """Import metadata from a JSON file and apply it to the target file.
+
+    Returns True on success.
+    """
+    if not os.path.isfile(json_path) or not os.path.isfile(filepath):
+        return False
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            updates = json.load(f)
+        if not isinstance(updates, dict):
+            return False
+    except Exception:
+        return False
+    return edit_metadata(filepath, updates, output_path)
+
+
+def remove_metadata_fields(filepath: str, fields: list[str],
+                           output_path: str | None = None) -> bool:
+    """Remove specific metadata fields from a file. Returns True on success."""
+    if not os.path.isfile(filepath):
+        return False
+    if output_path is None:
+        base, ext = os.path.splitext(filepath)
+        output_path = f"{base}_edited{ext}"
+    ftype = detect_file_type(filepath)
+    if ftype == "image":
+        return _remove_image_fields(filepath, output_path, fields)
+    if ftype in ("audio", "video"):
+        return _remove_audio_fields(filepath, output_path, fields)
+    if ftype == "pdf":
+        return _remove_pdf_fields(filepath, output_path, fields)
+    return False
+
+
+def rename_file(filepath: str, new_name: str) -> str | None:
+    """Rename a file (name only, same directory). Returns new path or None."""
+    if not os.path.isfile(filepath):
+        return None
+    directory = os.path.dirname(filepath)
+    new_path = os.path.join(directory, new_name)
+    if os.path.exists(new_path):
+        return None
+    try:
+        os.rename(filepath, new_path)
+        return new_path
+    except Exception:
+        return None
+
+
+def set_file_timestamps(filepath: str, modified: str | None = None,
+                        accessed: str | None = None) -> bool:
+    """Set the modification and/or access time on a file.
+
+    *modified* and *accessed* should be ISO-8601 datetime strings
+    (e.g. ``"2024-01-15 10:30:00"``).  If either is *None* the
+    corresponding timestamp is left unchanged.
+
+    Returns True on success.
+    """
+    if not os.path.isfile(filepath):
+        return False
+    try:
+        st = os.stat(filepath)
+        atime = st.st_atime
+        mtime = st.st_mtime
+        if modified is not None:
+            mtime = datetime.datetime.fromisoformat(modified).timestamp()
+        if accessed is not None:
+            atime = datetime.datetime.fromisoformat(accessed).timestamp()
+        os.utime(filepath, (atime, mtime))
+        return True
+    except Exception:
+        return False
+
+
+def get_editable_fields(filepath: str) -> list[str]:
+    """Return a list of common editable field names for the file type."""
+    ftype = detect_file_type(filepath)
+    if ftype == "image":
+        return [
+            "ImageDescription", "Make", "Model", "Software",
+            "Artist", "Copyright", "DateTimeOriginal",
+            "DateTimeDigitized", "UserComment",
+        ]
+    if ftype in ("audio", "video"):
+        return [
+            "title", "artist", "album", "albumartist", "genre",
+            "date", "tracknumber", "discnumber", "composer",
+            "lyricist", "conductor", "organization", "copyright",
+            "description", "comment",
+        ]
+    if ftype == "pdf":
+        return [
+            "Title", "Author", "Subject", "Creator", "Producer",
+            "Keywords",
+        ]
+    return []
+
+
+# ---- Field removal helpers ------------------------------------------------ #
+
+def _remove_image_fields(filepath: str, output_path: str,
+                         fields: list[str]) -> bool:
+    if not HAS_PIL:
+        return False
+    try:
+        img = PILImage.open(filepath)
+        exif_data = img.getexif()
+        reverse_tags = {v: k for k, v in EXIF_TAGS.items()}
+        for field in fields:
+            tag_id = reverse_tags.get(field)
+            if tag_id is not None and tag_id in exif_data:
+                del exif_data[tag_id]
+        fmt = img.format or "PNG"
+        img.save(output_path, format=fmt, exif=exif_data.tobytes())
+        return True
+    except Exception:
+        return False
+
+
+def _remove_audio_fields(filepath: str, output_path: str,
+                         fields: list[str]) -> bool:
+    if not HAS_MUTAGEN:
+        return False
+    try:
+        shutil.copy2(filepath, output_path)
+        audio = MutagenFile(output_path, easy=True)
+        if audio is None:
+            return False
+        if audio.tags is not None:
+            for field in fields:
+                if field in audio.tags:
+                    del audio.tags[field]
+            audio.save()
+        return True
+    except Exception:
+        return False
+
+
+def _remove_pdf_fields(filepath: str, output_path: str,
+                       fields: list[str]) -> bool:
+    if not HAS_PYPDF2:
+        return False
+    try:
+        reader = PdfReader(filepath)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        existing = {}
+        if reader.metadata:
+            for key in reader.metadata:
+                val = reader.metadata[key]
+                if val is not None:
+                    clean_key = key.lstrip("/") if isinstance(key, str) else str(key)
+                    if clean_key not in fields:
+                        existing[key] = str(val)
+        writer.add_metadata(existing)
+        with open(output_path, "wb") as f:
+            writer.write(f)
         return True
     except Exception:
         return False
